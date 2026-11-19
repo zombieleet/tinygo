@@ -13,7 +13,7 @@ var tmpl = template.Must(template.New("go").Funcs(template.FuncMap{
 	"mul": func(x, y int) int {
 		return x * y
 	},
-	"tuple": func(v ...interface{}) []interface{} {
+	"tuple": func(v ...any) []any {
 		return v
 	},
 	"title": strings.Title,
@@ -145,6 +145,7 @@ func __atomic_{{$opname}}_fetch_{{$bytes}}(ptr *{{$type}}, value {{$type}}, orde
 {{template "cas" .}}
 {{template "swap" .}}
 {{template "rmw" (tuple "add" . false "new = old + value")}}
+{{template "rmw" (tuple "sub" . false "new = old - value")}}
 {{template "rmw" (tuple "and" . false "new = old & value")}}
 {{template "rmw" (tuple "or" . false "new = old | value")}}
 

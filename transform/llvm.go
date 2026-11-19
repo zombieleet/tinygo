@@ -1,7 +1,7 @@
 package transform
 
 import (
-	"reflect"
+	"slices"
 
 	"tinygo.org/x/go-llvm"
 )
@@ -36,17 +36,15 @@ func hasUses(value llvm.Value) bool {
 // lowers a Go value into a vector of pointers, and OptimizeAllocs runs long
 // before any vectorizer. It is also why escape analysis may rely on this: a
 // pointer can only reach a vector lane through insertelement, which
-// valueEscapesAtImpl treats as an escape. A pass that starts feeding pointer
+// valueEscapesAt treats as an escape. A pass that starts feeding pointer
 // vectors to either caller needs a case here first.
 func typeHasPointers(typ llvm.Type) bool {
 	switch typ.TypeKind() {
 	case llvm.PointerTypeKind:
 		return true
 	case llvm.StructTypeKind:
-		for _, field := range typ.StructElementTypes() {
-			if typeHasPointers(field) {
-				return true
-			}
+		if slices.ContainsFunc(typ.StructElementTypes(), typeHasPointers) {
+			return true
 		}
 	case llvm.ArrayTypeKind:
 		return typ.ArrayLength() != 0 && typeHasPointers(typ.ElementType())
@@ -54,51 +52,24 @@ func typeHasPointers(typ llvm.Type) bool {
 	return false
 }
 
-// makeGlobalArray creates a new LLVM global with the given name and integers as
-// contents, and returns the global and initializer type.
-// Note that it is left with the default linkage etc., you should set
-// linkage/constant/etc properties yourself.
-func makeGlobalArray(mod llvm.Module, bufItf any, name string, elementType llvm.Type) (llvm.Type, llvm.Value) {
-	buf := reflect.ValueOf(bufItf)
-	var values []llvm.Value
-	for i := 0; i < buf.Len(); i++ {
-		ch := buf.Index(i).Uint()
-		values = append(values, llvm.ConstInt(elementType, ch, false))
+// constElement returns element i of the constant struct or array v.
+func constElement(v llvm.Value, i int) llvm.Value {
+	if v.IsAConstantAggregateZero().IsNil() {
+		return v.Operand(i)
 	}
-	value := llvm.ConstArray(elementType, values)
-	global := llvm.AddGlobal(mod, value.Type(), name)
-	global.SetInitializer(value)
-	return value.Type(), global
+	// LLVM stores an aggregate with only zero elements as a
+	// zeroinitializer, which has no operands. Each element is zero too.
+	return llvm.ConstNull(elementType(v.Type(), i))
 }
 
-// getGlobalBytes returns the slice contained in the array of the provided
-// global. It can recover the bytes originally created using makeGlobalArray, if
-// makeGlobalArray was given a byte slice.
-//
-// The builder parameter is only used for constant operations.
-func getGlobalBytes(global llvm.Value, builder llvm.Builder) []byte {
-	value := global.Initializer()
-	buf := make([]byte, value.Type().ArrayLength())
-	for i := range buf {
-		buf[i] = byte(builder.CreateExtractValue(value, i, "").ZExtValue())
+// elementType returns the type of element i of the struct or array type typ.
+func elementType(typ llvm.Type, i int) llvm.Type {
+	switch typ.TypeKind() {
+	case llvm.StructTypeKind:
+		return typ.StructTypeAtIndex(i)
+	default:
+		return typ.ElementType()
 	}
-	return buf
-}
-
-// replaceGlobalByteWithArray replaces a global integer type in the module with
-// an integer array, using a GEP to make the types match. It is a convenience
-// function used for creating reflection sidetables, for example.
-func replaceGlobalIntWithArray(mod llvm.Module, name string, buf any) llvm.Value {
-	oldGlobal := mod.NamedGlobal(name)
-	globalType, global := makeGlobalArray(mod, buf, name+".tmp", oldGlobal.GlobalValueType())
-	gep := llvm.ConstGEP(globalType, global, []llvm.Value{
-		llvm.ConstInt(mod.Context().Int32Type(), 0, false),
-		llvm.ConstInt(mod.Context().Int32Type(), 0, false),
-	})
-	oldGlobal.ReplaceAllUsesWith(gep)
-	oldGlobal.EraseFromParentAsGlobal()
-	global.SetName(name)
-	return global
 }
 
 // stripPointerCasts strips instruction pointer casts (getelementptr and
@@ -117,4 +88,31 @@ func stripPointerCasts(value llvm.Value) llvm.Value {
 		}
 	}
 	return value
+}
+
+// memoryEffects holds two bits, ref and mod, per memory location. See
+// https://github.com/llvm/llvm-project/blob/94ebcfd16dac67486bae624f74e1c5c789448bae/llvm/include/llvm/Support/ModRef.h#L62
+type memoryEffects uint64
+
+var memoryAttrKind = llvm.AttributeKindID("memory")
+
+// readMemoryEffects returns the memory effects of fn. A function without a
+// memory attribute may read and write any memory.
+func readMemoryEffects(fn llvm.Value) memoryEffects {
+	attr := fn.GetEnumFunctionAttribute(memoryAttrKind)
+	if attr.IsNil() {
+		return ^memoryEffects(0)
+	}
+	return memoryEffects(attr.GetEnumValue())
+}
+
+// onlyAccessesArgMem returns whether the function reads or writes only memory
+// that its pointer arguments point to.
+func (effects memoryEffects) onlyAccessesArgMem() bool {
+	return effects>>2 == 0
+}
+
+// onlyReadsMemory returns whether the function writes no memory.
+func (effects memoryEffects) onlyReadsMemory() bool {
+	return effects&0xaaaaaaaa == 0
 }

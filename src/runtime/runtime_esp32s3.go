@@ -6,6 +6,7 @@ import (
 	"device"
 	"device/esp"
 	"machine"
+	"runtime/volatile"
 	"unsafe"
 )
 
@@ -74,6 +75,12 @@ func main() {
 		clearbss()
 	}
 
+	// Initialize PSRAM if the machine.psram build tag is set.
+	if err := initPSRAM(); err != "" {
+		psramInitErr = err
+		volatile.StoreUint8(&psramInitFailed, 1)
+	}
+
 	// Initialize main system timer used for time.Now.
 	initTimer()
 
@@ -90,16 +97,19 @@ func main() {
 	exit(0)
 }
 
+var (
+	psramInitFailed uint8
+	psramInitErr    string
+)
+
 func init() {
 	// Initialize UART.
 	machine.InitSerial()
-}
-
-func abort() {
-	print("abort called\n")
-	// lock up forever
-	for {
-		device.Asm("waiti 0")
+	// Use volatile load so compile-time interp does not fold this away before
+	// main() runs initPSRAM(). Note: with -serial=usb, the host may miss this
+	// panic if the port is not yet open.
+	if hasPSRAM && volatile.LoadUint8(&psramInitFailed) != 0 {
+		panic(psramInitErr)
 	}
 }
 
