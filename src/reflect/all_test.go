@@ -129,7 +129,6 @@ var typeTests = []pair{
 	}{},
 		"struct { c chan *int32; d float32 }",
 	},
-	/* // TODO(tinygo): No function support
 	{struct{ x (func(a int8, b int32)) }{}, "func(int8, int32)"},
 	{struct {
 		x struct {
@@ -137,7 +136,7 @@ var typeTests = []pair{
 		}
 	}{},
 		"struct { c func(chan *reflect_test.integer, *int8) }",
-	}, */
+	},
 	{struct {
 		x struct {
 			a int8
@@ -202,7 +201,6 @@ var typeTests = []pair{
 	}{},
 		`struct { a int8 "reflect:\"hi \\x00there\\t\\n\\\"\\\\\"" }`,
 	},
-	/* // TODO(tinygo):  Functions not supported
 	{struct {
 		x struct {
 			f func(args ...int)
@@ -226,7 +224,6 @@ var typeTests = []pair{
 	}{},
 		"struct { int32; int64 }",
 	},
-	*/
 }
 
 var valueTests = []pair{
@@ -252,18 +249,16 @@ var valueTests = []pair{
 	{new(**integer), "**reflect_test.integer(0)"},
 	{new(map[string]int32), "map[string]int32{<can't iterate on maps>}"},
 	{new(chan<- string), "chan<- string"},
-	//{new(func(a int8, b int32)), "func(int8, int32)(0)"}, // TODO(tinygo): No function support
+	{new(func(a int8, b int32)), "func(int8, int32)(0)"},
 	{new(struct {
 		c chan *int32
 		d float32
 	}),
 		"struct { c chan *int32; d float32 }{chan *int32, 0}",
 	},
-	/* // TODO(tinygo): No function support
 	{new(struct{ c func(chan *integer, *int8) }),
 		"struct { c func(chan *reflect_test.integer, *int8) }{func(chan *reflect_test.integer, *int8)(0)}",
 	},
-	*/
 	{new(struct {
 		a int8
 		b int32
@@ -771,8 +766,6 @@ func TestInterfaceValue(t *testing.T) {
 	}
 }
 
-/*
-
 func TestFunctionValue(t *testing.T) {
 	var x any = func() {}
 	v := ValueOf(x)
@@ -781,8 +774,6 @@ func TestFunctionValue(t *testing.T) {
 	}
 	assert(t, v.Type().String(), "func()")
 }
-
-*/
 
 func TestGrow(t *testing.T) {
 	v := ValueOf([]int(nil))
@@ -1593,7 +1584,6 @@ func TestIsZero(t *testing.T) {
 		}
 	}
 
-	/* // TODO(tinygo): panic/recover support
 	func() {
 		defer func() {
 			if r := recover(); r == nil {
@@ -1602,7 +1592,6 @@ func TestIsZero(t *testing.T) {
 		}()
 		(Value{}).IsZero()
 	}()
-	*/
 }
 
 // extra comment for gofmt
@@ -1715,8 +1704,6 @@ func TestNilMap(t *testing.T) {
 	mv.SetMapIndex(ValueOf("hi"), Value{})
 }
 
-/* // TODO(tinygo): missing chan reflect support
-
 func TestChan(t *testing.T) {
 	for loop := 0; loop < 2; loop++ {
 		var c chan int
@@ -1823,6 +1810,54 @@ type caseInfo struct {
 	closed    bool
 	helper    func()
 	panic     bool
+}
+
+type exhaustive struct {
+	r    *rand.Rand
+	pos  int
+	last []choice
+}
+
+type choice struct {
+	off int
+	n   int
+	max int
+}
+
+func (x *exhaustive) Next() bool {
+	if x.r == nil {
+		x.r = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	x.pos = 0
+	if x.last == nil {
+		x.last = []choice{}
+		return true
+	}
+	for i := len(x.last) - 1; i >= 0; i-- {
+		c := &x.last[i]
+		if c.n+1 < c.max {
+			c.n++
+			x.last = x.last[:i+1]
+			return true
+		}
+	}
+	return false
+}
+
+func (x *exhaustive) Choose(max int) int {
+	if x.pos >= len(x.last) {
+		x.last = append(x.last, choice{x.r.Intn(max), 0, max})
+	}
+	c := &x.last[x.pos]
+	x.pos++
+	if c.max != max {
+		panic("inconsistent use of exhaustive tester")
+	}
+	return (c.n + c.off) % max
+}
+
+func (x *exhaustive) Maybe() bool {
+	return x.Choose(2) == 1
 }
 
 var allselect = flag.Bool("allselect", false, "exhaustive select test")
@@ -2185,8 +2220,6 @@ func fmtSelect(info []caseInfo) string {
 	return buf.String()
 }
 
-// TODO(tinygo): missing func/method/call support
-
 type two [2]uintptr
 
 // Difficult test for function call because of
@@ -2277,6 +2310,8 @@ func TestCallWithStruct(t *testing.T) {
 	}
 }
 
+/*
+
 func TestCallReturnsEmpty(t *testing.T) {
 	// Issue 21717: past-the-end pointer write in Call with
 	// nonzero-sized frame and zero-sized return value.
@@ -2300,6 +2335,8 @@ func TestCallReturnsEmpty(t *testing.T) {
 	}
 	runtime.KeepAlive(v)
 }
+
+*/
 
 func TestMakeFunc(t *testing.T) {
 	f := dummy
@@ -2459,8 +2496,6 @@ func TestMakeFuncInvalidReturnAssignments(t *testing.T) {
 		f()
 	})
 }
-
-*/
 
 type Point struct {
 	x, y int
@@ -3286,8 +3321,6 @@ func TestFieldPkgPath(t *testing.T) {
 	})
 }
 
-/*
-
 func TestMethodPkgPath(t *testing.T) {
 	type I interface {
 		x()
@@ -3344,10 +3377,7 @@ func TestVariadicType(t *testing.T) {
 	t.Error(s)
 }
 
-*/
-
 /*
-
 type inner struct {
 	x int
 }
@@ -3446,7 +3476,6 @@ func TestNumMethodOnDDD(t *testing.T) {
 	}
 }
 
-/*
 func TestPtrTo(t *testing.T) {
 	// This block of code means that the ptrToThis field of the
 	// reflect data for *unsafe.Pointer is non zero, see
@@ -3459,7 +3488,17 @@ func TestPtrTo(t *testing.T) {
 
 	typ := TypeOf(z)
 	for i = 0; i < 100; i++ {
-		typ = PointerTo(typ)
+		next := PointerTo(typ)
+		if got := PointerTo(typ); got != next {
+			t.Fatalf("PointerTo returned distinct types %v and %v", next, got)
+		}
+		typ = next
+		if i == 2 {
+			var deep *****unsafe.Pointer
+			if typ != TypeOf(deep) {
+				t.Fatalf("PointerTo returned %v, want static type %v", typ, TypeOf(deep))
+			}
+		}
 	}
 	for i = 0; i < 100; i++ {
 		typ = typ.Elem()
@@ -3492,8 +3531,6 @@ func TestPtrToGC(t *testing.T) {
 		}
 	}
 }
-
-*/
 
 func TestAddr(t *testing.T) {
 	var p struct {
@@ -3787,8 +3824,6 @@ func TestStructArg(t *testing.T) {
 	}
 }
 
-*/
-
 var tagGetTests = []struct {
 	Tag   StructTag
 	Key   string
@@ -3932,6 +3967,8 @@ func TestUnexported(t *testing.T) {
 	shouldPanic("Method", func() { v.Type().Method(0) })
 }
 
+*/
+
 func TestSetPanic(t *testing.T) {
 	ok := func(f func()) { f() }
 	bad := func(f func()) { shouldPanic("Set", f) }
@@ -4017,8 +4054,6 @@ func TestSetPanic(t *testing.T) {
 	bad(func() { clear(v.Field(6).Field(1)) })          // .namedT2.namedT0
 	bad(func() { clear(v.Field(6).Field(1).Field(0)) }) // .namedT2.namedT0.W
 }
-
-*/
 
 type timp int
 
@@ -4149,7 +4184,6 @@ func TestValuePanic(t *testing.T) {
 */
 
 func shouldPanic(expect string, f func()) {
-	return
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -4188,8 +4222,6 @@ func isValid(v Value) {
 	}
 }
 
-/*
-
 func TestAlias(t *testing.T) {
 	x := string("hello")
 	v := ValueOf(&x).Elem()
@@ -4201,8 +4233,6 @@ func TestAlias(t *testing.T) {
 		t.Errorf("aliasing: old=%q new=%q, want hello, world", oldvalue, newvalue)
 	}
 }
-
-*/
 
 var V = ValueOf
 
@@ -4810,8 +4840,6 @@ func TestConvert(t *testing.T) {
 	}
 }
 
-/*
-
 func TestConvertPanic(t *testing.T) {
 	s := make([]byte, 4)
 	p := new([8]byte)
@@ -4855,8 +4883,6 @@ func TestConvertSlice2Array(t *testing.T) {
 		}
 	}
 }
-
-*/
 
 var gFloat32 float32
 
@@ -4995,8 +5021,6 @@ func TestTypeOverflow(t *testing.T) {
 		t.Errorf("%v should overflow uint32", ovfUint32)
 	}
 }
-
-/*
 
 func checkSameType(t *testing.T, x Type, y any) {
 	if x != TypeOf(y) || TypeOf(Zero(x).Interface()) != TypeOf(y) {
@@ -5204,6 +5228,8 @@ func TestArrayOfGenericAlg(t *testing.T) {
 	}
 }
 
+/*
+
 func TestArrayOfDirectIface(t *testing.T) {
 	{
 		type T [1]*byte
@@ -5242,6 +5268,8 @@ func TestArrayOfDirectIface(t *testing.T) {
 		}
 	}
 }
+
+*/
 
 // Ensure passing in negative lengths panics.
 // See https://golang.org/issue/43603
@@ -5292,6 +5320,46 @@ func TestSliceOverflow(t *testing.T) {
 		}
 	}()
 	MakeSlice(st, int(l), int(l))
+}
+
+func TestSliceAt(t *testing.T) {
+	const maxUintptr = 1 << (8 * unsafe.Sizeof(uintptr(0)))
+	var p [10]byte
+
+	typ := TypeOf(p[0])
+
+	s := SliceAt(typ, unsafe.Pointer(&p[0]), len(p))
+	if s.Pointer() != uintptr(unsafe.Pointer(&p[0])) {
+		t.Fatalf("unexpected underlying array: %d, want: %d", s.Pointer(), uintptr(unsafe.Pointer(&p[0])))
+	}
+	if s.Len() != len(p) || s.Cap() != len(p) {
+		t.Fatalf("unexpected len or cap, len: %d, cap: %d, want: %d", s.Len(), s.Cap(), len(p))
+	}
+
+	typ = TypeOf(0)
+	if !SliceAt(typ, unsafe.Pointer((*int)(nil)), 0).IsNil() {
+		t.Fatal("nil pointer with zero length must return nil")
+	}
+
+	// nil pointer with positive length panics
+	shouldPanic("", func() { _ = SliceAt(typ, unsafe.Pointer((*int)(nil)), 1) })
+
+	// negative length
+	var neg = -1
+	shouldPanic("", func() { _ = SliceAt(TypeOf(byte(0)), unsafe.Pointer(&p[0]), neg) })
+
+	// size overflows address space
+	n := uint64(0)
+	shouldPanic("", func() { _ = SliceAt(TypeOf(n), unsafe.Pointer(&n), maxUintptr/8) })
+	shouldPanic("", func() { _ = SliceAt(TypeOf(n), unsafe.Pointer(&n), maxUintptr/8+1) })
+
+	// sliced memory overflows address space
+	last := (*byte)(unsafe.Pointer(^uintptr(0)))
+	// This panics here, but won't panic in ../../test/unsafebuiltins.go,
+	// because unsafe.Slice(last, 1) does not escape.
+	//
+	// _ = SliceAt(typ, unsafe.Pointer(last), 1)
+	shouldPanic("", func() { _ = SliceAt(typ, unsafe.Pointer(last), 2) })
 }
 
 func TestSliceOfGC(t *testing.T) {
@@ -5838,6 +5906,8 @@ func TestStructOfGenericAlg(t *testing.T) {
 	}
 }
 
+/*
+
 func TestStructOfDirectIface(t *testing.T) {
 	{
 		type T struct{ X [1]*byte }
@@ -6106,6 +6176,8 @@ func TestStructOfTooManyFields(t *testing.T) {
 	}
 }
 
+*/
+
 func TestStructOfDifferentPkgPath(t *testing.T) {
 	fields := []StructField{
 		{
@@ -6122,6 +6194,28 @@ func TestStructOfDifferentPkgPath(t *testing.T) {
 	shouldPanic("different PkgPath", func() {
 		StructOf(fields)
 	})
+
+	for _, name := range []string{"ä", "中"} {
+		for _, first := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/first=%t", name, first), func(t *testing.T) {
+				fields := []StructField{
+					{Name: name, Type: TypeOf(byte(0))},
+					{Name: "x", PkgPath: "example.com/p", Type: TypeOf(byte(0))},
+				}
+				if !first {
+					fields[0], fields[1] = fields[1], fields[0]
+				}
+				typ := StructOf(fields)
+				for i, want := range fields {
+					got := typ.Field(i)
+					if got.PkgPath != want.PkgPath || got.IsExported() != want.IsExported() {
+						t.Errorf("field %q: PkgPath=%q, IsExported=%t; want %q, %t",
+							want.Name, got.PkgPath, got.IsExported(), want.PkgPath, want.IsExported())
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestStructOfTooLarge(t *testing.T) {
@@ -6130,10 +6224,10 @@ func TestStructOfTooLarge(t *testing.T) {
 	t4 := TypeOf(int32(0))
 	t0 := ArrayOf(0, t1)
 
-	// 2^64-3 sized type (or 2^32-3 on 32-bit archs)
+	maxSize := uintptr(^uint32(0))
 	bigType := StructOf([]StructField{
-		{Name: "F1", Type: ArrayOf(int(^uintptr(0)>>1), t1)},
-		{Name: "F2", Type: ArrayOf(int(^uintptr(0)>>1-1), t1)},
+		{Name: "F1", Type: ArrayOf(int(maxSize>>1), t1)},
+		{Name: "F2", Type: ArrayOf(int(maxSize>>1-1), t1)},
 	})
 
 	type test struct {
@@ -6143,7 +6237,7 @@ func TestStructOfTooLarge(t *testing.T) {
 
 	tests := [...]test{
 		{
-			shouldPanic: false, // 2^64-1, ok
+			shouldPanic: false,
 			fields: []StructField{
 				{Name: "F1", Type: bigType},
 				{Name: "F2", Type: ArrayOf(2, t1)},
@@ -6164,7 +6258,7 @@ func TestStructOfTooLarge(t *testing.T) {
 			},
 		},
 		{
-			shouldPanic: true, // overflow while adding trailing byte for zero-sized fields
+			shouldPanic: false,
 			fields: []StructField{
 				{Name: "F1", Type: bigType},
 				{Name: "F2", Type: ArrayOf(2, t1)},
@@ -6200,10 +6294,15 @@ func TestStructOfTooLarge(t *testing.T) {
 					return
 				}
 			}()
-			_ = StructOf(tt.fields)
+			typ := StructOf(tt.fields)
+			if !tt.shouldPanic && typ.Size() != maxSize {
+				t.Errorf("test %d size = %d, want %d", i, typ.Size(), maxSize)
+			}
 		}()
 	}
 }
+
+/*
 
 func TestChanOf(t *testing.T) {
 	// check construction and use of type not in binary
@@ -6241,6 +6340,8 @@ func TestChanOf(t *testing.T) {
 	}
 }
 
+*/
+
 func TestChanOfDir(t *testing.T) {
 	// check construction and use of type not in binary
 	type T string
@@ -6260,6 +6361,8 @@ func TestChanOfDir(t *testing.T) {
 		t.Errorf("chan dir: have %q, want %q", cst.ChanDir().String(), "chan<-")
 	}
 }
+
+/*
 
 func TestChanOfGC(t *testing.T) {
 	done := make(chan bool, 1)
@@ -6308,6 +6411,8 @@ func TestChanOfGC(t *testing.T) {
 		}
 	}
 }
+
+*/
 
 func TestMapOf(t *testing.T) {
 	// check construction and use of type not in binary
@@ -6403,6 +6508,8 @@ func TestMapOfGCValues(t *testing.T) {
 		}
 	}
 }
+
+/*
 
 func TestTypelinksSorted(t *testing.T) {
 	var last string
@@ -6552,8 +6659,6 @@ func TestEmbed(t *testing.T) {
 	}
 }
 
-/*
-
 func TestAllocsInterfaceBig(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping malloc count in short mode")
@@ -6574,96 +6679,6 @@ func TestAllocsInterfaceSmall(t *testing.T) {
 	}
 }
 
-// An exhaustive is a mechanism for writing exhaustive or stochastic tests.
-// The basic usage is:
-//
-//	for x.Next() {
-//		... code using x.Maybe() or x.Choice(n) to create test cases ...
-//	}
-//
-// Each iteration of the loop returns a different set of results, until all
-// possible result sets have been explored. It is okay for different code paths
-// to make different method call sequences on x, but there must be no
-// other source of non-determinism in the call sequences.
-//
-// When faced with a new decision, x chooses randomly. Future explorations
-// of that path will choose successive values for the result. Thus, stopping
-// the loop after a fixed number of iterations gives somewhat stochastic
-// testing.
-//
-// Example:
-//
-//	for x.Next() {
-//		v := make([]bool, x.Choose(4))
-//		for i := range v {
-//			v[i] = x.Maybe()
-//		}
-//		fmt.Println(v)
-//	}
-//
-// prints (in some order):
-//
-//	[]
-//	[false]
-//	[true]
-//	[false false]
-//	[false true]
-//	...
-//	[true true]
-//	[false false false]
-//	...
-//	[true true true]
-//	[false false false false]
-//	...
-//	[true true true true]
-type exhaustive struct {
-	r    *rand.Rand
-	pos  int
-	last []choice
-}
-
-type choice struct {
-	off int
-	n   int
-	max int
-}
-
-func (x *exhaustive) Next() bool {
-	if x.r == nil {
-		x.r = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
-	x.pos = 0
-	if x.last == nil {
-		x.last = []choice{}
-		return true
-	}
-	for i := len(x.last) - 1; i >= 0; i-- {
-		c := &x.last[i]
-		if c.n+1 < c.max {
-			c.n++
-			x.last = x.last[:i+1]
-			return true
-		}
-	}
-	return false
-}
-
-func (x *exhaustive) Choose(max int) int {
-	if x.pos >= len(x.last) {
-		x.last = append(x.last, choice{x.r.Intn(max), 0, max})
-	}
-	c := &x.last[x.pos]
-	x.pos++
-	if c.max != max {
-		panic("inconsistent use of exhaustive tester")
-	}
-	return (c.n + c.off) % max
-}
-
-func (x *exhaustive) Maybe() bool {
-	return x.Choose(2) == 1
-}
-
 func GCFunc(args []Value) []Value {
 	runtime.GC()
 	return []Value{}
@@ -6674,6 +6689,8 @@ func TestReflectFuncTraceback(t *testing.T) {
 	f.Call([]Value{})
 }
 
+/*
+
 func TestReflectMethodTraceback(t *testing.T) {
 	p := Point{3, 4}
 	m := ValueOf(p).MethodByName("GCMethod")
@@ -6682,6 +6699,8 @@ func TestReflectMethodTraceback(t *testing.T) {
 		t.Errorf("Call returned %d; want 8", i)
 	}
 }
+
+*/
 
 func TestSmallZero(t *testing.T) {
 	type T [10]byte
@@ -6723,8 +6742,6 @@ func TestZeroSet(t *testing.T) {
 	}
 }
 
-*/
-
 func TestFieldByIndexNil(t *testing.T) {
 	type P struct {
 		F int
@@ -6749,7 +6766,6 @@ func TestFieldByIndexNil(t *testing.T) {
 }
 
 /*
-
 // Given
 //	type Outer struct {
 //		*Inner
@@ -6854,6 +6870,8 @@ func TestCallArgLive(t *testing.T) {
 	*CallGC = false
 }
 
+*/
+
 func TestMakeFuncStackCopy(t *testing.T) {
 	target := func(in []Value) []Value {
 		runtime.GC()
@@ -6878,6 +6896,8 @@ func useStack(n int) {
 	var b [1024]byte // makes frame about 1KB
 	useStack(n - 1 + int(b[99]))
 }
+
+/*
 
 type Impl struct{}
 
@@ -7466,6 +7486,8 @@ func TestMapAlloc(t *testing.T) {
 	// map, but to still catch a regression where we keep re-allocating in the hashmap as new entries are added.
 }
 
+*/
+
 func TestChanAlloc(t *testing.T) {
 	// Note: for a chan int, the return Value must be allocated, so we
 	// use a chan *int instead.
@@ -7482,8 +7504,6 @@ func TestChanAlloc(t *testing.T) {
 	// a limitation of escape analysis. If that is ever fixed the
 	// allocs < 0.5 condition will trigger and this test should be fixed.
 }
-
-*/
 
 type TheNameOfThisTypeIsExactly255BytesLongSoWhenTheCompilerPrependsTheReflectTestPackageNameAndExtraStarTheLinkerRuntimeAndReflectPackagesWillHaveToCorrectlyDecodeTheSecondLengthByte0123456789_0123456789_0123456789_0123456789_0123456789_012345678 int
 
@@ -7957,8 +7977,6 @@ func iterateToString(it *MapIter) string {
 	return "[" + strings.Join(got, ", ") + "]"
 }
 
-/*
-
 func TestConvertibleTo(t *testing.T) {
 	t1 := ValueOf(example1.MyStruct{}).Type()
 	t2 := ValueOf(example2.MyStruct{}).Type()
@@ -7975,8 +7993,6 @@ func TestConvertibleTo(t *testing.T) {
 		t.Fatalf("(%s).ConvertibleTo(%s) = true, want false", t3, t4)
 	}
 }
-
-*/
 
 func TestSetIter(t *testing.T) {
 	data := map[string]int{
@@ -8110,8 +8126,6 @@ type (
 	namedBytes []byte
 )
 
-/*
-
 func TestValue_Cap(t *testing.T) {
 	a := &[3]int{1, 2, 3}
 	v := ValueOf(a)
@@ -8177,8 +8191,6 @@ func TestValue_Len(t *testing.T) {
 		t.Errorf("error is %q, want %q", e, wantStr)
 	}
 }
-
-*/
 
 func TestValue_Comparable(t *testing.T) {
 	var a int
@@ -8360,8 +8372,6 @@ func TestValue_Comparable(t *testing.T) {
 		}
 	}
 }
-
-/*
 
 type ValueEqualTest struct {
 	v, u           any
@@ -8564,6 +8574,8 @@ func TestValue_EqualNonComparable(t *testing.T) {
 		}
 	}
 }
+
+/*
 
 func TestInitFuncTypes(t *testing.T) {
 	n := 100

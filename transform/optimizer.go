@@ -8,7 +8,7 @@ import (
 
 	"github.com/tinygo-org/tinygo/compileopts"
 	"github.com/tinygo-org/tinygo/compiler/ircheck"
-	"github.com/tinygo-org/tinygo/compiler/llvmutil"
+	"github.com/tinygo-org/tinygo/internal/llvmutil"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -31,14 +31,25 @@ func OptimizePackage(mod llvm.Module, config *compileopts.Config) {
 // always be run before emitting machine code.
 func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 	optLevel, speedLevel, _ := config.OptLevel()
+	instcombine := "instcombine"
+	if llvm.VersionMajor >= 18 {
+		instcombine += "<no-verify-fixpoint>"
+	}
 
 	// Make sure these functions are kept in tact during TinyGo transformation passes.
 	for _, name := range functionsUsedInTransforms {
-		fn := mod.NamedFunction(name)
-		if fn.IsNil() {
+		if mod.NamedFunction(name).IsNil() {
 			panic(fmt.Errorf("missing core function %q", name))
 		}
-		fn.SetLinkage(llvm.ExternalLinkage)
+	}
+	exported := exportFunctions(mod, functionsUsedInTransforms)
+
+	if errs := CheckNoRuntime(mod); len(errs) != 0 {
+		return errs
+	}
+
+	if config.Options.PrintBounds != nil {
+		protectBoundsPanics(mod)
 	}
 
 	// run a check of all of our code
@@ -53,22 +64,21 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		// Run some preparatory passes for the Go optimizer.
 		po := llvm.NewPassBuilderOptions()
 		defer po.Dispose()
-		optPasses := "globaldce,globalopt,ipsccp,instcombine<no-verify-fixpoint>,adce,function-attrs"
-		if llvmutil.Version() < 18 {
-			// LLVM 17 doesn't have the no-verify-fixpoint flag.
-			optPasses = "globaldce,globalopt,ipsccp,instcombine,adce,function-attrs"
-		}
+		optPasses := "globaldce,globalopt,ipsccp," + instcombine + ",adce,function-attrs"
 		blockGlobalAllocPromotion(mod)
 		err := mod.RunPasses(optPasses, llvm.TargetMachine{}, po)
 		removeGlobalAllocPromotionMarker(mod)
 		if err != nil {
 			return []error{fmt.Errorf("could not build pass pipeline: %w", err)}
 		}
-
 		// Run TinyGo-specific optimization passes.
 		OptimizeStringToBytes(mod)
+		OptimizeStringFromBytes(mod)
 		maxStackSize := config.MaxStackAlloc()
 		OptimizeAllocs(mod, nil, maxStackSize, nil)
+		if err := pruneDeadCodeBeforeInterfaceLowering(mod); err != nil {
+			return []error{err}
+		}
 		err = LowerInterfaces(mod, config)
 		if err != nil {
 			return []error{err}
@@ -108,9 +118,14 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 			},
 		)
 		OptimizeStringToBytes(mod)
+		OptimizeStringFromBytes(mod)
 		OptimizeStringEqual(mod)
 
 	} else {
+		if err := pruneDeadCodeBeforeInterfaceLowering(mod); err != nil {
+			return []error{err}
+		}
+
 		// Must be run at any optimization level.
 		err := LowerInterfaces(mod, config)
 		if err != nil {
@@ -144,13 +159,7 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 	}
 
 	// After TinyGo-specific transforms have finished, undo exporting these functions.
-	for _, name := range functionsUsedInTransforms {
-		fn := mod.NamedFunction(name)
-		if fn.IsNil() || fn.IsDeclaration() {
-			continue
-		}
-		fn.SetLinkage(llvm.InternalLinkage)
-	}
+	exported.restore()
 
 	// Run the ThinLTO pre-link passes, meant to be run on each individual
 	// module. This saves compilation time compared to "default<#>" and is meant
@@ -158,7 +167,18 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 	// ThinLTO.
 	po := llvm.NewPassBuilderOptions()
 	defer po.Dispose()
-	passes := fmt.Sprintf("thinlto-pre-link<%s>", optLevel)
+	pipelineLevel := optLevel
+	if llvm.VersionMajor >= 23 && (pipelineLevel == "Os" || pipelineLevel == "Oz") {
+		// LLVM 23 removed the Os/Oz pipeline levels. Use O2 instead, since
+		// the optsize/minsize function attributes are already set elsewhere.
+		pipelineLevel = "O2"
+	}
+	passes := fmt.Sprintf("thinlto-pre-link<%s>", pipelineLevel)
+	if speedLevel > 0 {
+		// Remove late-folded branches before GC roots make their globals escape.
+		// See https://github.com/tinygo-org/tinygo/pull/6256#issuecomment-6879072850.
+		passes += ",function(" + instcombine + ",simplifycfg),globalopt,globaldce"
+	}
 	blockGlobalAllocPromotion(mod)
 	err := mod.RunPasses(passes, llvm.TargetMachine{}, po)
 	removeGlobalAllocPromotionMarker(mod)
@@ -177,13 +197,19 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 		}
 	}
 
+	if config.Options.PrintBounds != nil {
+		PrintBoundsChecks(mod, config.Options.PrintBounds, func(pos token.Position, kind string) {
+			fmt.Fprintln(os.Stderr, FormatBoundsCheck(pos, kind))
+		})
+	}
+
 	if config.Scheduler() == "none" {
 		// Check only after temporary ABI roots have been removed and dead code
 		// eliminated. Otherwise, a dead function kept alive solely to prevent
 		// argument promotion can produce a spurious scheduler error.
-		if start := mod.NamedFunction("internal/task.start"); !start.IsNil() && len(getUses(start)) > 0 {
+		if uses := getUses(mod.NamedFunction("internal/task.start")); len(uses) > 0 {
 			errs := []error{}
-			for _, call := range getUses(start) {
+			for _, call := range uses {
 				errs = append(errs, errorAt(call, "attempted to start a goroutine without a scheduler"))
 			}
 			return errs
@@ -200,6 +226,94 @@ func Optimize(mod llvm.Module, config *compileopts.Config) []error {
 	return nil
 }
 
+func pruneDeadCodeBeforeInterfaceLowering(mod llvm.Module) error {
+	pruneUnusedReflectMakeFunc(mod)
+	options := llvm.NewPassBuilderOptions()
+	defer options.Dispose()
+	if err := mod.RunPasses("globaldce", llvm.TargetMachine{}, options); err != nil {
+		return fmt.Errorf("could not run pre-interface globaldce pass: %w", err)
+	}
+	return nil
+}
+
+func pruneRuntimeStartup(mod llvm.Module) error {
+	options := llvm.NewPassBuilderOptions()
+	defer options.Dispose()
+	if pruneUnusedRuntimeStartup(mod) {
+		if err := mod.RunPasses("globaldce", llvm.TargetMachine{}, options); err != nil {
+			return fmt.Errorf("could not run post-startup-pruning globaldce pass: %w", err)
+		}
+	}
+	return nil
+}
+
+// PrepareRuntimeStartup resolves startup checks before interpreting initializers.
+func PrepareRuntimeStartup(mod llvm.Module) error {
+	defer exportFunctions(mod, functionsUsedInTransforms).restore()
+	options := llvm.NewPassBuilderOptions()
+	defer options.Dispose()
+	err := mod.RunPasses("globaldce,function-attrs,adce,globaldce", llvm.TargetMachine{}, options)
+	if err != nil {
+		return fmt.Errorf("could not prepare runtime startup: %w", err)
+	}
+	return pruneRuntimeStartup(mod)
+}
+
+func pruneUnusedRuntimeStartup(mod llvm.Module) bool {
+	changed := lowerRuntimeStartupCheck(mod,
+		"runtime.gorootEnvEnabled",
+		"tinygo.runtime.feature.goroot",
+		"runtime.GOROOT")
+	return lowerRuntimeStartupCheck(mod,
+		"runtime.godebugEnvEnabled",
+		"tinygo.runtime.feature.godebug",
+		"(*internal/godebug.Setting).Value") || changed
+}
+
+func lowerRuntimeStartupCheck(mod llvm.Module, checkName, markerName, featureName string) bool {
+	marker := mod.NamedFunction(markerName)
+	enabled := !marker.IsNil() && hasUses(marker)
+	feature := mod.NamedFunction(featureName)
+	enabled = enabled || (!feature.IsNil() && hasUses(feature))
+
+	check := mod.NamedFunction(checkName)
+	if check.IsNil() {
+		return false
+	}
+
+	for _, use := range getUses(check) {
+		if use.IsACallInst().IsNil() || use.CalledValue() != check {
+			panic("unexpected use of runtime startup check")
+		}
+		use.ReplaceAllUsesWith(llvm.ConstInt(use.Type(), boolToUint64(enabled), false))
+		use.EraseFromParentAsInstruction()
+	}
+	if hasUses(check) {
+		panic("runtime startup check still has uses")
+	}
+	check.EraseFromParentAsFunction()
+	if !marker.IsNil() {
+		for _, use := range getUses(marker) {
+			if use.IsACallInst().IsNil() || use.CalledValue() != marker {
+				panic("unexpected use of runtime feature marker")
+			}
+			use.EraseFromParentAsInstruction()
+		}
+		if hasUses(marker) {
+			panic("runtime feature marker still has uses")
+		}
+		marker.EraseFromParentAsFunction()
+	}
+	return true
+}
+
+func boolToUint64(value bool) uint64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func blockGlobalAllocPromotion(mod llvm.Module) {
 	ctx := mod.Context()
 	ptrType := llvm.PointerType(ctx.Int8Type(), 0)
@@ -210,10 +324,7 @@ func blockGlobalAllocPromotion(mod llvm.Module) {
 	var marked bool
 	for _, name := range []string{"runtime.alloc", "runtime.alloc_noheap"} {
 		alloc := mod.NamedFunction(name)
-		if alloc.IsNil() {
-			continue
-		}
-		for _, call := range getUses(alloc) {
+		for call := range llvmutil.Uses(alloc) {
 			if call.IsACallInst().IsNil() || call.CalledValue() != alloc {
 				continue
 			}
@@ -265,4 +376,31 @@ var functionsUsedInTransforms = []string{
 	"runtime.alloc",
 	"runtime.free",
 	"runtime.nilPanic",
+}
+
+// linkageSnapshot holds the linkage of functions, so that it can be restored
+// after the functions were made external.
+type linkageSnapshot map[llvm.Value]llvm.Linkage
+
+// exportFunctions gives the named functions external linkage, so that LLVM
+// passes keep them, and returns their previous linkage.
+func exportFunctions(mod llvm.Module, names []string) linkageSnapshot {
+	snapshot := make(linkageSnapshot, len(names))
+	for _, name := range names {
+		fn := mod.NamedFunction(name)
+		// A declaration is already external, and globaldce may remove it.
+		if fn.IsNil() || fn.IsDeclaration() {
+			continue
+		}
+		snapshot[fn] = fn.Linkage()
+		fn.SetLinkage(llvm.ExternalLinkage)
+	}
+	return snapshot
+}
+
+// restore gives each function its previous linkage.
+func (snapshot linkageSnapshot) restore() {
+	for fn, linkage := range snapshot {
+		fn.SetLinkage(linkage)
+	}
 }

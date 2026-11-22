@@ -5,6 +5,7 @@ package machine
 import (
 	"device/esp"
 	"errors"
+	"internal/byteorder"
 	"runtime/interrupt"
 	"runtime/volatile"
 	"sync"
@@ -540,6 +541,9 @@ func (uart *UART) Configure(config UARTConfig) error {
 			config.RX = 16
 		}
 	}
+	if psramPin(config.TX) || psramPin(config.RX) || psramPin(config.RTS) || psramPin(config.CTS) {
+		return errPinUsedByPSRAM
+	}
 
 	uart.Bus.CLKDIV.Set(peripheralClock / config.BaudRate)
 
@@ -674,7 +678,9 @@ func (uart *UART) writeByte(b byte) error {
 		// Read UART_TXFIFO_CNT from the status register, which indicates how
 		// many bytes there are in the transmit buffer. Wait until there are
 		// less than 128 bytes in this buffer (the default buffer size).
-		gosched()
+		if !interrupt.In() {
+			gosched()
+		}
 	}
 	// Write to the TX_FIFO register.
 	(*volatile.Register8)(unsafe.Add(unsafe.Pointer(uart.Bus), 0x200C0000)).Set(b)
@@ -839,7 +845,7 @@ func (spi *SPI) Tx(w, r []byte) error {
 			// We can fill the entire 64-byte transfer buffer with data.
 			// This loop is slightly faster than the loop below.
 			for i := 0; i < 16; i++ {
-				word := uint32(w[i*4])<<0 | uint32(w[i*4+1])<<8 | uint32(w[i*4+2])<<16 | uint32(w[i*4+3])<<24
+				word := byteorder.LEUint32(w[i*4:])
 				transferWords[i].Set(word)
 			}
 		} else {
